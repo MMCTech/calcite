@@ -2938,13 +2938,19 @@ public class RelBuilderTest {
     //   SELECT *
     //   FROM emp
     //   ORDER BY deptno DESC FETCH 0
-    final RelBuilder builder = RelBuilder.create(config().build());
-    final RelNode root =
-        builder.scan("EMP")
-            .sortLimit(-1, 0, builder.desc(builder.field("DEPTNO")))
+    final Function<RelBuilder, RelNode> f = b ->
+        b.scan("EMP")
+            .sortLimit(-1, 0, b.desc(b.field("DEPTNO")))
             .build();
     final String expected = "LogicalValues(tuples=[[]])\n";
-    assertThat(root, hasTree(expected));
+    final String expectedNoSimplify = ""
+        + "LogicalSort(sort0=[$7], dir0=[DESC], fetch=[0])\n"
+        + "  LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(f.apply(createBuilder()), hasTree(expected));
+    assertThat(f.apply(createBuilder(c -> c.withSimplifyLimit(true))),
+        hasTree(expected));
+    assertThat(f.apply(createBuilder(c -> c.withSimplifyLimit(false))),
+        hasTree(expectedNoSimplify));
   }
 
   /** Test case for
@@ -3213,6 +3219,42 @@ public class RelBuilderTest {
         + "LogicalFilter(condition=[=($7, 10)])\n"
         + "  LogicalTableScan(table=[[scott, EMP]])\n";
     assertThat(root, hasTree(expected));
+  }
+
+  /** Tests {@link RelBuilder#in} with duplicate values. */
+  @Test void testFilterIn() {
+    final Function<RelBuilder, RelNode> f = b ->
+        b.scan("EMP")
+            .filter(
+                b.in(b.field("DEPTNO"), b.literal(10), b.literal(20),
+                    b.literal(10)))
+            .build();
+    final String expected = ""
+        + "LogicalFilter(condition=[SEARCH($7, Sarg[10, 20])])\n"
+        + "  LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(f.apply(createBuilder()), hasTree(expected));
+    assertThat(f.apply(createBuilder(c -> c.withSimplify(false))),
+        hasTree(expected));
+  }
+
+  @Test void testFilterOrIn() {
+    final Function<RelBuilder, RelNode> f = b ->
+        b.scan("EMP")
+            .filter(
+                b.or(
+                    b.call(SqlStdOperatorTable.GREATER_THAN, b.field("DEPTNO"),
+                        b.literal(15)),
+                    b.in(b.field("JOB"), b.literal("CLERK")),
+                    b.in(b.field("DEPTNO"), b.literal(10), b.literal(20),
+                        b.literal(11), b.literal(10))))
+            .build();
+    final String expected = ""
+        + "LogicalFilter(condition=[OR(SEARCH($7, Sarg[10, 11, (15‥+∞)]), "
+        + "SEARCH($2, Sarg['CLERK']:CHAR(5)))])\n"
+        + "  LogicalTableScan(table=[[scott, EMP]])\n";
+    assertThat(f.apply(createBuilder()), hasTree(expected));
+    assertThat(f.apply(createBuilder(c -> c.withSimplify(false))),
+        hasTree(expected));
   }
 
   /** Tests filter builder with correlation variables. */
